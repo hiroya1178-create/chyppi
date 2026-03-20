@@ -38,6 +38,7 @@ function getDeadlineAlert(order){
 }
 
 function estimateHours(order){
+  if(order && Number(order.estimatedHours || 0) > 0) return Number(order.estimatedHours || 0);
   const title = String(order.projectName || "");
   const tpl = state.templates.find(t => title.includes(t.title) || t.title.includes(title));
   if(tpl) return Number(tpl.hours || 0);
@@ -76,31 +77,6 @@ if (window.pdfjsLib) {
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.js";
 }
 
-
-const BENCHMARK_TASK_HOURS = {
-  designCore: 47.4,
-  adPlus: 58.6,
-  lpFull: 116.8,
-  designDraft: 25.0,
-  designResize: 15.7,
-  designFix: 6.7,
-  guideDraft: 6.2,
-  guideFix: 4.0,
-  mailCoding: 1.0,
-  lpCoding: 40.0,
-  verify: 6.7,
-  afterFix: 16.7,
-  misc: 6.0
-};
-function benchmarkHoursForProject(projectName){
-  const t = String(projectName || "").toLowerCase();
-  if (t.includes("lp") || t.includes("サイト") || t.includes("web") || t.includes("ホームページ")) return BENCHMARK_TASK_HOURS.lpFull;
-  if (t.includes("sns") || t.includes("instagram") || t.includes("広告")) return BENCHMARK_TASK_HOURS.adPlus;
-  if (t.includes("バナー") || t.includes("画像") || t.includes("チラシ")) return BENCHMARK_TASK_HOURS.adPlus;
-  if (t.includes("ロゴ") || t.includes("パッケージ") || t.includes("会社案内")) return BENCHMARK_TASK_HOURS.designCore;
-  return 0;
-}
-
 function randomPick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 function randomDate(startDayOffset, endDayOffset){
   const base = new Date(2026, 2, 1);
@@ -119,7 +95,6 @@ function buildSampleOrder(seed){
   const order = {
     id: Date.now() + seed,
     client, projectName, amount, assignee, finishDate, status, judge,
-    estimatedHours: benchmarkHoursForProject(projectName) || Math.max(4, Math.round(amount / 10000)),
     notes: "サンプル案件メモ",
     history: ["サンプル案件を追加しました"],
     outsourceStatus: judge === "外注推奨" ? randomPick(["依頼前","依頼済み","制作中"]) : "",
@@ -141,23 +116,119 @@ function buildMonthCells(year, month){
   while(cells.length % 7 !== 0) cells.push(null);
   return cells;
 }
+function normalizeDateString(value){
+  if(!value) return "";
+  let v = String(value).trim();
+  let m = v.match(/(20\d{2})[\/\-.年]\s*(\d{1,2})[\/\-.月]\s*(\d{1,2})/);
+  if(m){
+    const y = m[1];
+    const mo = String(m[2]).padStart(2,"0");
+    const d = String(m[3]).padStart(2,"0");
+    return `${y}-${mo}-${d}`;
+  }
+  m = v.match(/(20\d{2})(\d{2})(\d{2})/);
+  if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return "";
+}
 function extractFieldsFromText(text){
-  const cleaned = text.replace(/\s+/g, " ").trim();
+  const raw = String(text || "");
+  const cleaned = raw.replace(/[ \t]+/g, " ").trim();
+  const lines = raw
+    .split(/\r?\n/)
+    .map(s => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
   let client = "", projectName = "", amount = "", finishDate = "";
-  const clientPatterns = [/(?:顧客名|クライアント名|発注者|御社名|会社名)\s*[:：]?\s*([^\n\r]{2,40})/i,/([^\s]{2,30}株式会社)/,/([^\s]{2,30}有限会社)/];
-  const projectPatterns = [/(?:案件名|件名|プロジェクト名|制作物|タイトル)\s*[:：]?\s*([^\n\r]{2,60})/i,/(?:依頼内容|内容)\s*[:：]?\s*([^\n\r]{2,60})/i];
-  const amountPatterns = [/(?:金額|予算|見積|見積額|請求額)\s*[:：]?\s*¥?\s*([0-9,]{3,})/i,/¥\s*([0-9,]{3,})/];
-  const datePatterns = [/(?:納期|完了予定日|納品日|希望納期)\s*[:：]?\s*(20[0-9]{2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{1,2})/i,/(20[0-9]{2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{1,2})/];
-  for(const p of clientPatterns){ const m = cleaned.match(p); if(m&&m[1]){ client=m[1].trim(); break; } }
-  for(const p of projectPatterns){ const m = cleaned.match(p); if(m&&m[1]){ projectName=m[1].trim(); break; } }
-  for(const p of amountPatterns){ const m = cleaned.match(p); if(m&&m[1]){ amount=m[1].replace(/,/g,""); break; } }
-  for(const p of datePatterns){ const m = cleaned.match(p); if(m&&m[1]){ finishDate=m[1].replace(/\./g,"-").replace(/\//g,"-"); break; } }
-  return { client, projectName, amount, finishDate };
+
+  const fieldLabels = {
+    client: ["顧客名","クライアント名","発注者","御社名","会社名","依頼主"],
+    project: ["案件名","件名","プロジェクト名","制作物","タイトル","依頼内容","内容"],
+    amount: ["金額","予算","見積","見積額","請求額","制作費"],
+    date: ["納期","完了予定日","納品日","希望納期","締切","提出日"]
+  };
+
+  function pickFromLines(labels){
+    for(const line of lines){
+      for(const label of labels){
+        const idx = line.indexOf(label);
+        if(idx >= 0){
+          let candidate = line.slice(idx + label.length).replace(/^[:：\-\s]+/, "").trim();
+          if(candidate) return candidate;
+        }
+      }
+    }
+    return "";
+  }
+
+  client = pickFromLines(fieldLabels.client);
+  projectName = pickFromLines(fieldLabels.project);
+  const amountLine = pickFromLines(fieldLabels.amount);
+  const dateLine = pickFromLines(fieldLabels.date);
+
+  if(amountLine){
+    const m = amountLine.match(/([0-9][0-9,]{2,})/);
+    if(m) amount = m[1].replace(/,/g,"");
+  }
+  if(dateLine){
+    finishDate = normalizeDateString(dateLine);
+  }
+
+  if(!client){
+    const clientPatterns = [
+      /(?:顧客名|クライアント名|発注者|御社名|会社名|依頼主)\s*[:：]?\s*([^\n\r]{2,40})/i,
+      /([^\s]{2,30}株式会社)/,
+      /([^\s]{2,30}有限会社)/,
+      /([^\s]{2,30}合同会社)/
+    ];
+    for(const p of clientPatterns){ const m = cleaned.match(p); if(m&&m[1]){ client=m[1].trim(); break; } }
+  }
+  if(!projectName){
+    const projectPatterns = [
+      /(?:案件名|件名|プロジェクト名|制作物|タイトル|依頼内容|内容)\s*[:：]?\s*([^\n\r]{2,60})/i
+    ];
+    for(const p of projectPatterns){ const m = cleaned.match(p); if(m&&m[1]){ projectName=m[1].trim(); break; } }
+  }
+  if(!amount){
+    const amountPatterns = [
+      /(?:金額|予算|見積|見積額|請求額|制作費)\s*[:：]?\s*¥?\s*([0-9,]{3,})/i,
+      /¥\s*([0-9,]{3,})/
+    ];
+    for(const p of amountPatterns){ const m = cleaned.match(p); if(m&&m[1]){ amount=m[1].replace(/,/g,""); break; } }
+  }
+  if(!finishDate){
+    const datePatterns = [
+      /(?:納期|完了予定日|納品日|希望納期|締切|提出日)\s*[:：]?\s*((?:20\d{2}[\/\-.年]\s*\d{1,2}[\/\-.月]\s*\d{1,2}))/i,
+      /((?:20\d{2}[\/\-.年]\s*\d{1,2}[\/\-.月]\s*\d{1,2}))/i,
+      /(20\d{2}\d{2}\d{2})/
+    ];
+    for(const p of datePatterns){ const m = cleaned.match(p); if(m&&m[1]){ finishDate=normalizeDateString(m[1]); break; } }
+  }
+
+  client = client.replace(/[|｜]/g, " ").trim();
+  projectName = projectName.replace(/[|｜]/g, " ").trim();
+  if(client.length > 40) client = client.slice(0, 40).trim();
+  if(projectName.length > 60) projectName = projectName.slice(0, 60).trim();
+
+  const filled = [client, projectName, amount, finishDate].filter(Boolean).length;
+  let status = "error";
+  let message = "読取できませんでした。手入力してください。";
+  if(filled >= 4){
+    status = "ok";
+    message = "PDF読取に成功しました。候補をフォームへ反映しています。";
+  }else if(filled >= 1){
+    status = "partial";
+    message = "一部だけ読取できました。足りない項目は手入力してください。";
+  }
+  return {
+    client, projectName, amount, finishDate,
+    status, message,
+    preview: lines.slice(0, 12).join("\n")
+  };
 }
 
 function SideNav({ currentPage, setCurrentPage }){
   const items = [["dashboard","ダッシュボード"],["orders","受注管理"],["notifications","通知履歴"],["customers","顧客管理"],["staff","スタッフ管理"],["templates","テンプレート管理"],["calendar","日程カレンダー"],["outsource","外注管理"]];
-  return `<aside class="sidebar"><div class="brand">デザインマネージャー</div><div class="brand-sub">クリエイティブ管理</div><div class="nav">${items.map(([k,l])=>`<button class="${currentPage===k?'active':''}" onclick="setPage('${k}')">${l}</button>`).join("")}</div><div class="version">デザインマネージャー 公開版 v3.5.6</div></aside>`;
+  return `<aside class="sidebar"><div class="brand">デザインマネージャー</div><div class="brand-sub">クリエイティブ管理</div><div class="nav">${items.map(([k,l])=>`<button class="${currentPage===k?'active':''}" onclick="setPage('${k}')">${l}</button>`).join("")}</div><div class="version">デザインマネージャー 公開版 v3.5.7</div></aside>`;
 }
 
 const state = {
@@ -174,7 +245,9 @@ const state = {
   createErrors: {},
   pdfLoading: false,
   prefillTemplateId: null,
-  createForm: { client:"", projectName:"", amount:"80000", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" },
+  createForm: { client:"", projectName:"", amount:"80000", estimatedHours:"12", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"", extractedText:"" },
+  pdfParseStatus: "",
+  pdfParseMessage: "",
   calendarMonth: { year: 2026, month: 2 },
   selectedCalendarDate: null,
   calendarQuickEditId: null,
@@ -329,9 +402,13 @@ function openCreate(prefillTemplateId=null){
   state.createErrors = {};
   if(prefillTemplateId){
     const tpl = state.templates.find(t => t.id === prefillTemplateId);
-    state.createForm = { client:"", projectName:tpl?.title || "", amount:String(tpl?.price || 80000), assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" };
+    state.createForm = { client:"", projectName:tpl?.title || "", amount:String(tpl?.price || 80000), assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"", extractedText:"" };
+    state.pdfParseStatus = "";
+    state.pdfParseMessage = "";
   } else {
-    state.createForm = { client:"", projectName:"", amount:"80000", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" };
+    state.createForm = { client:"", projectName:"", amount:"80000", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"", extractedText:"" };
+    state.pdfParseStatus = "";
+    state.pdfParseMessage = "";
   }
   render();
 }
@@ -536,6 +613,7 @@ function renderOrderModal(){
     <input value="${esc(order.projectName)}" oninput="patchOrder('projectName', this.value)"><div style="height:8px"></div>
     <input value="${esc(order.client)}" oninput="patchOrder('client', this.value)"><div style="height:8px"></div>
     <input value="${esc(order.amount)}" oninput="patchOrder('amount', this.value.replace(/[^0-9]/g,''))"><div style="height:8px"></div>
+    <div class="help" style="margin-bottom:6px">工数(h)</div><input type="number" min="1" step="1" inputmode="numeric" value="${esc(order.estimatedHours || estimateHours(order))}" oninput="patchOrder('estimatedHours', this.value.replace(/[^0-9]/g,''))"><div style="height:8px"></div>
     <select onchange="patchOrder('assignee', this.value)">${staffOptions.map(n=>`<option ${order.assignee===n?'selected':''}>${n}</option>`).join("")}</select><div style="height:8px"></div>
     <input type="date" value="${esc(order.finishDate||"")}" oninput="patchOrder('finishDate', this.value)"><div style="height:8px"></div>
     <select class="${statusClass(order.status)}" onchange="patchOrder('status', this.value)">${["納期OK","納期NG","納品受信"].map(s=>`<option ${order.status===s?'selected':''}>${s}</option>`).join("")}</select><div style="height:8px"></div><div><div class="help" style="margin-bottom:6px">案件メモ</div><textarea oninput="patchOrder('notes', this.value)">${esc(order.notes || "")}</textarea></div>
@@ -885,37 +963,50 @@ function saveOutsource(){
 async function handlePdfUpload(event){
   const file = event.target.files && event.target.files[0];
   if(!file) return;
-  state.pdfLoading = true; state.createForm.sourceFileName = file.name; render();
+  state.pdfLoading = true;
+  state.pdfParseStatus = "";
+  state.pdfParseMessage = "";
+  state.createForm.sourceFileName = file.name;
+  state.createForm.extractedText = "";
+  render();
   try{
     if(!window.pdfjsLib) throw new Error("pdfjsLib not found");
     const buffer = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
     let text = "";
-    for(let p=1; p<=pdf.numPages; p++){
+    const maxPages = Math.min(pdf.numPages, 10);
+    for(let p=1; p<=maxPages; p++){
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      text += content.items.map(i=>i.str).join(" ") + "\n";
+      const pageText = content.items.map(i => i.str).join(" ");
+      text += pageText + "\n";
     }
     const fields = extractFieldsFromText(text);
     state.createForm.client = fields.client || state.createForm.client;
     state.createForm.projectName = fields.projectName || state.createForm.projectName;
     state.createForm.amount = fields.amount || state.createForm.amount;
     state.createForm.finishDate = fields.finishDate || state.createForm.finishDate;
+    state.createForm.extractedText = fields.preview || "";
+    state.pdfParseStatus = fields.status;
+    state.pdfParseMessage = fields.message;
   }catch(e){
-    alert("PDFの読み込みに失敗しました。文字が入ったPDFか確認してください。");
+    state.pdfParseStatus = "error";
+    state.pdfParseMessage = "PDFの読取に失敗しました。手入力で続けられます。";
   }finally{
-    state.pdfLoading = false; render();
+    state.pdfLoading = false;
+    render();
   }
 }
 function renderCreateModal(){
   if(!state.createOpen) return "";
   const f = state.createForm, e = state.createErrors;
   return `<div class="modal-backdrop" onclick="if(event.target===this) closeCreate()"><div class="modal" style="width:min(860px,100%)"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:16px"><div><h3 style="margin:0 0 6px">新規案件追加</h3><div class="help">顧客名と案件名を先に入れると進めやすいです。PDFを添付すると候補を自動入力します。</div></div><button class="btn" onclick="closeCreate()">閉じる</button></div>
-  <div class="upload-box"><div style="font-weight:700;margin-bottom:6px">PDF発注書を読み込む</div><div class="help">PDFの中の文字から、顧客名・案件名・金額・完了予定日の候補を自動入力します。</div><div style="margin-top:10px"><input type="file" accept="application/pdf" onchange="handlePdfUpload(event)"></div>${state.pdfLoading?`<div class="help" style="margin-top:8px">PDFを読み込み中...</div>`:""}${f.sourceFileName?`<div class="file-pill">${esc(f.sourceFileName)}</div>`:""}</div>
+  <div class="upload-box"><div style="font-weight:700;margin-bottom:6px">PDF発注書を読み込む</div><div class="help">PDFの中の文字から、顧客名・案件名・金額・完了予定日の候補を自動入力します。読めなくても手入力で続けられます。</div><div style="margin-top:10px"><input type="file" accept="application/pdf" onchange="handlePdfUpload(event)"></div>${state.pdfLoading?`<div class="help" style="margin-top:8px">PDFを読み込み中...</div>`:""}${f.sourceFileName?`<div class="file-pill">${esc(f.sourceFileName)}</div>`:""}${state.pdfParseMessage?`<div class="parse-status ${state.pdfParseStatus==='ok'?'parse-ok':state.pdfParseStatus==='partial'?'parse-partial':'parse-error'}">${esc(state.pdfParseMessage)}</div>`:""}${f.extractedText?`<div class="parse-preview">${esc(f.extractedText)}</div>`:""}</div>
   <div class="grid-2" style="margin-top:16px">
     <div><div class="help" style="margin-bottom:6px">顧客名 *</div><input value="${esc(f.client)}" oninput="patchCreate('client', this.value)">${e.client?`<div class="error">${esc(e.client)}</div>`:""}</div>
     <div><div class="help" style="margin-bottom:6px">案件名 *</div><input value="${esc(f.projectName)}" oninput="patchCreate('projectName', this.value)">${e.projectName?`<div class="error">${esc(e.projectName)}</div>`:""}</div>
     <div><div class="help" style="margin-bottom:6px">金額 *</div><input inputmode="numeric" value="${esc(f.amount)}" oninput="patchCreate('amount', this.value.replace(/[^0-9]/g,''))">${e.amount?`<div class="error">${esc(e.amount)}</div>`:""}</div>
+    <div><div class="help" style="margin-bottom:6px">工数(h)</div><input type="number" min="1" step="1" inputmode="numeric" value="${esc(f.estimatedHours || 12)}" oninput="patchCreate('estimatedHours', this.value.replace(/[^0-9]/g,''))"><div class="help" style="margin-top:6px">手入力で設定できます。未入力時は自動判定です。</div></div>
     <div><div class="help" style="margin-bottom:6px">担当者</div><select onchange="patchCreate('assignee', this.value)">${staffOptions.map(n=>`<option ${f.assignee===n?'selected':''}>${n}</option>`).join("")}</select></div>
     <div><div class="help" style="margin-bottom:6px">完了予定日 *</div><input type="date" value="${esc(f.finishDate)}" oninput="patchCreate('finishDate', this.value)">${e.finishDate?`<div class="error">${esc(e.finishDate)}</div>`:""}</div>
     <div><div class="help" style="margin-bottom:6px">ステータス</div><select class="${statusClass(f.status)}" onchange="patchCreate('status', this.value)">${["納期OK","納期NG","納品受信"].map(s=>`<option ${f.status===s?'selected':''}>${s}</option>`).join("")}</select></div>
@@ -938,7 +1029,7 @@ function validateCreate(){
 function createOrder(){
   if(!validateCreate()){ render(); return; }
   const f = state.createForm;
-  const next = { id: Date.now(), client:f.client, projectName:f.projectName, amount:Number(f.amount||0), assignee:f.assignee, finishDate:f.finishDate, status:f.status, judge:statusToJudge(f.status), notes:f.notes || "", history:["新規案件を追加しました"], outsourceStatus:"依頼前" };
+  const next = { id: Date.now(), client:f.client, projectName:f.projectName, amount:Number(f.amount||0), estimatedHours:Number(f.estimatedHours||0), assignee:f.assignee, finishDate:f.finishDate, status:f.status, judge:statusToJudge(f.status), notes:f.notes || "", history:["新規案件を追加しました"], outsourceStatus:"依頼前" };
   next.notice = buildNotice(next);
   state.orders = [next, ...state.orders];
   logNotification("案件登録", next.projectName, "新規案件が登録されました。");
