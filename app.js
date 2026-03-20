@@ -38,6 +38,7 @@ function getDeadlineAlert(order){
 }
 
 function estimateHours(order){
+  if(order && Number(order.estimatedHours || 0) > 0) return Number(order.estimatedHours || 0);
   const title = String(order.projectName || "");
   const tpl = state.templates.find(t => title.includes(t.title) || t.title.includes(title));
   if(tpl) return Number(tpl.hours || 0);
@@ -131,7 +132,7 @@ function extractFieldsFromText(text){
 
 function SideNav({ currentPage, setCurrentPage }){
   const items = [["dashboard","ダッシュボード"],["orders","受注管理"],["notifications","通知履歴"],["customers","顧客管理"],["staff","スタッフ管理"],["templates","テンプレート管理"],["calendar","日程カレンダー"],["outsource","外注管理"]];
-  return `<aside class="sidebar"><div class="brand">デザインマネージャー</div><div class="brand-sub">クリエイティブ管理</div><div class="nav">${items.map(([k,l])=>`<button class="${currentPage===k?'active':''}" onclick="setPage('${k}')">${l}</button>`).join("")}</div><div class="version">デザインマネージャー 公開版 v3.5.9</div></aside>`;
+  return `<aside class="sidebar"><div class="brand">デザインマネージャー</div><div class="brand-sub">クリエイティブ管理</div><div class="nav">${items.map(([k,l])=>`<button class="${currentPage===k?'active':''}" onclick="setPage('${k}')">${l}</button>`).join("")}</div><div class="version">デザインマネージャー 公開版 v3.5.8</div></aside>`;
 }
 
 const state = {
@@ -148,7 +149,7 @@ const state = {
   createErrors: {},
   pdfLoading: false,
   prefillTemplateId: null,
-  createForm: { client:"", projectName:"", amount:"80000", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" },
+  createForm: { client:"", projectName:"", amount:"80000", estimatedHours:"12", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" },
   calendarMonth: { year: 2026, month: 2 },
   selectedCalendarDate: null,
   calendarQuickEditId: null,
@@ -303,9 +304,9 @@ function openCreate(prefillTemplateId=null){
   state.createErrors = {};
   if(prefillTemplateId){
     const tpl = state.templates.find(t => t.id === prefillTemplateId);
-    state.createForm = { client:"", projectName:tpl?.title || "", amount:String(tpl?.price || 80000), assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" };
+    state.createForm = { client:"", projectName:tpl?.title || "", amount:String(tpl?.price || 80000), estimatedHours:String(tpl?.hours || 12), assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" };
   } else {
-    state.createForm = { client:"", projectName:"", amount:"80000", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" };
+    state.createForm = { client:"", projectName:"", amount:"80000", estimatedHours:"12", assignee:staffOptions[0], finishDate:"2026-03-31", status:"納期OK", notes:"", sourceFileName:"" };
   }
   render();
 }
@@ -510,6 +511,7 @@ function renderOrderModal(){
     <input value="${esc(order.projectName)}" oninput="patchOrder('projectName', this.value)"><div style="height:8px"></div>
     <input value="${esc(order.client)}" oninput="patchOrder('client', this.value)"><div style="height:8px"></div>
     <input value="${esc(order.amount)}" oninput="patchOrder('amount', this.value.replace(/[^0-9]/g,''))"><div style="height:8px"></div>
+    <div class="help" style="margin-bottom:6px">工数(h)</div><input type="number" min="1" step="1" inputmode="numeric" value="${esc(order.estimatedHours || estimateHours(order))}" oninput="patchOrder('estimatedHours', this.value.replace(/[^0-9]/g,''))"><div style="height:8px"></div>
     <select onchange="patchOrder('assignee', this.value)">${staffOptions.map(n=>`<option ${order.assignee===n?'selected':''}>${n}</option>`).join("")}</select><div style="height:8px"></div>
     <input type="date" value="${esc(order.finishDate||"")}" oninput="patchOrder('finishDate', this.value)"><div style="height:8px"></div>
     <select class="${statusClass(order.status)}" onchange="patchOrder('status', this.value)">${["納期OK","納期NG","納品受信"].map(s=>`<option ${order.status===s?'selected':''}>${s}</option>`).join("")}</select><div style="height:8px"></div><div><div class="help" style="margin-bottom:6px">案件メモ</div><textarea oninput="patchOrder('notes', this.value)">${esc(order.notes || "")}</textarea></div>
@@ -683,7 +685,7 @@ function renderStaff(){
 }
 function renderStaffModal(){
   if(!state.staffEditorOpen) return "";
-  const member = state.editingStaffId ? state.staff.find(s=>s.id===state.editingStaffId) : {name:"",icon:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
+  const member = state.editingStaffId ? state.staff.find(s=>s.id===state.editingStaffId) : {name:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
   return `<div class="modal-backdrop" onclick="if(event.target===this) closeStaffEditor()"><div class="modal" style="width:min(820px,100%)"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:16px"><div><h3 style="margin:0 0 6px">スタッフ編集</h3><div class="help">スタッフ情報を追加・編集できます</div></div><button class="btn" onclick="closeStaffEditor()">閉じる</button></div>
   <div class="grid-2">
     <div><div class="help" style="margin-bottom:6px">名前</div><input value="${esc(member.name||"")}" oninput="patchStaff('name', this.value)"></div>
@@ -698,25 +700,23 @@ function patchStaff(key,val){
   if(state.editingStaffId){
     state.staff = state.staff.map(s=>s.id===state.editingStaffId?{...s,[key]:key==="hoursPerDay"?Number(val||0):val}:s);
   }else{
-    state._draftStaff = state._draftStaff || {name:"",icon:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
+    state._draftStaff = state._draftStaff || {name:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
     state._draftStaff[key] = key==="hoursPerDay"?Number(val||0):val;
   }
-  render();
 }
 function patchStaffSkills(text){
   if(state.editingStaffId){
     state.staff = state.staff.map(s=>s.id===state.editingStaffId?{...s,skills:text.split("\n")}:s);
   }else{
-    state._draftStaff = state._draftStaff || {name:"",icon:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
+    state._draftStaff = state._draftStaff || {name:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
     state._draftStaff.skills = text.split("\n");
   }
-  render();
 }
 function saveStaff(){
   if(state.editingStaffId){
     state.staff = state.staff.map(s=>s.id===state.editingStaffId?{...s,skills:(s.skills||[]).map(x=>String(x).trim()).filter(Boolean)}:s);
   }else{
-    const d = state._draftStaff || {name:"",icon:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
+    const d = state._draftStaff || {name:"",role:"デザイナー",email:"",hoursPerDay:8,skills:[""]};
     if(!d.name || !d.name.trim()) return;
     state.staff = [{...d,id:Date.now(),skills:(d.skills||[]).map(x=>String(x).trim()).filter(Boolean)}, ...state.staff];
     delete state._draftStaff;
@@ -890,6 +890,7 @@ function renderCreateModal(){
     <div><div class="help" style="margin-bottom:6px">顧客名 *</div><input value="${esc(f.client)}" oninput="patchCreate('client', this.value)">${e.client?`<div class="error">${esc(e.client)}</div>`:""}</div>
     <div><div class="help" style="margin-bottom:6px">案件名 *</div><input value="${esc(f.projectName)}" oninput="patchCreate('projectName', this.value)">${e.projectName?`<div class="error">${esc(e.projectName)}</div>`:""}</div>
     <div><div class="help" style="margin-bottom:6px">金額 *</div><input inputmode="numeric" value="${esc(f.amount)}" oninput="patchCreate('amount', this.value.replace(/[^0-9]/g,''))">${e.amount?`<div class="error">${esc(e.amount)}</div>`:""}</div>
+    <div><div class="help" style="margin-bottom:6px">工数(h)</div><input type="number" min="1" step="1" inputmode="numeric" value="${esc(f.estimatedHours || 12)}" oninput="patchCreate('estimatedHours', this.value.replace(/[^0-9]/g,''))"><div class="help" style="margin-top:6px">手入力で設定できます。未入力時は自動判定です。</div></div>
     <div><div class="help" style="margin-bottom:6px">担当者</div><select onchange="patchCreate('assignee', this.value)">${staffOptions.map(n=>`<option ${f.assignee===n?'selected':''}>${n}</option>`).join("")}</select></div>
     <div><div class="help" style="margin-bottom:6px">完了予定日 *</div><input type="date" value="${esc(f.finishDate)}" oninput="patchCreate('finishDate', this.value)">${e.finishDate?`<div class="error">${esc(e.finishDate)}</div>`:""}</div>
     <div><div class="help" style="margin-bottom:6px">ステータス</div><select class="${statusClass(f.status)}" onchange="patchCreate('status', this.value)">${["納期OK","納期NG","納品受信"].map(s=>`<option ${f.status===s?'selected':''}>${s}</option>`).join("")}</select></div>
@@ -912,7 +913,7 @@ function validateCreate(){
 function createOrder(){
   if(!validateCreate()){ render(); return; }
   const f = state.createForm;
-  const next = { id: Date.now(), client:f.client, projectName:f.projectName, amount:Number(f.amount||0), assignee:f.assignee, finishDate:f.finishDate, status:f.status, judge:statusToJudge(f.status), notes:f.notes || "", history:["新規案件を追加しました"], outsourceStatus:"依頼前" };
+  const next = { id: Date.now(), client:f.client, projectName:f.projectName, amount:Number(f.amount||0), estimatedHours:Number(f.estimatedHours||0), assignee:f.assignee, finishDate:f.finishDate, status:f.status, judge:statusToJudge(f.status), notes:f.notes || "", history:["新規案件を追加しました"], outsourceStatus:"依頼前" };
   next.notice = buildNotice(next);
   state.orders = [next, ...state.orders];
   logNotification("案件登録", next.projectName, "新規案件が登録されました。");

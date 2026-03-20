@@ -73,7 +73,4 @@ textarea{min-height:110px;resize:vertical}
 @media (max-width:1100px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:820px){.metric-grid{grid-template-columns:1fr}}
 
-.staff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.staff-name-wrap{display:flex;align-items:center;gap:10px;min-width:0}
-.staff-avatar{width:40px;height:40px;border-radius:999px;background:#ede9fe;color:#5b21b6;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;flex:0 0 auto;border:1px solid #ddd6fe}
-.staff-avatar-input{width:72px;text-align:center}
+.modal input,.modal select,.modal textarea{font-size:16px}
